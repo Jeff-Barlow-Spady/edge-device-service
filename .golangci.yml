@@ -1,0 +1,38 @@
+run:
+  deadline: 5m
+
+linters:
+  enable:
+    - gofmt
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - gosec
+    - prealloc
+    - gocritic
+    - revive
+
+linters-settings:
+  gocritic:
+    enabled-tags:
+      - performance
+      - style
+      - experimental
+  gosec:
+    excludes:
+      - G404  # Allow weak random number generators in tests
+  revive:
+    rules:
+      - name: exported
+        arguments:
+          - checkPrivateReceivers
+          - disableStutteringCheck
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+

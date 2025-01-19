@@ -1,0 +1,68 @@
+{
+    admin off
+    auto_https off
+}
+
+:80 {
+    # Common security headers
+    header {
+        # Enable HTTP Strict Transport Security (HSTS)
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        # Disable clients from sniffing the media type
+        X-Content-Type-Options "nosniff"
+        # Keep referrer data off of HTTP connections
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # Enable cross-site filter (XSS) and tell browser to block detected attacks
+        X-XSS-Protection "1; mode=block"
+        # Prevent site from being embedded in iframes
+        X-Frame-Options "DENY"
+    }
+
+    # Global CORS configuration
+    @cors_preflight method OPTIONS
+    handle @cors_preflight {
+        header Access-Control-Allow-Origin "*"
+        header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE"
+        header Access-Control-Allow-Headers "Content-Type, Authorization"
+        header Access-Control-Max-Age "3600"
+        respond 204
+    }
+
+    # GPIO Service
+    handle /api/gpio/* {
+        uri strip_prefix /api/gpio
+        reverse_proxy gpio:8000 {
+            health_path /health
+            health_interval 30s
+        }
+    }
+
+    # Auth Service
+    handle /api/auth/* {
+        uri strip_prefix /api/auth
+        reverse_proxy auth:8000 {
+            health_path /health
+            health_interval 30s
+        }
+    }
+
+    # Metrics Service
+    handle /api/metrics/* {
+        uri strip_prefix /api/metrics
+        reverse_proxy metrics:8000 {
+            health_path /health
+            health_interval 30s
+        }
+    }
+
+    # Health check endpoint
+    handle /health {
+        respond "OK" 200
+    }
+
+    # Catch-all error handling
+    handle_errors {
+        respond "{status_code} {status_text}" {status_code}
+    }
+}
+
