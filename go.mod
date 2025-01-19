@@ -1,4 +1,4 @@
-module github.com/yourusername/edge-device-service
+module github.com/Jeff-Barlow-Spady/edge-device-service
 
 go 1.21
 
@@ -12,3 +12,13 @@ require (
     gorm.io/driver/postgres v1.5.4
 )
 
+
+require (
+    periph.io/x/conn/v3 v3.7.1
+    periph.io/x/host/v3 v3.8.3
+)
+
+require (
+    github.com/dgrijalva/jwt-go v3.2.0+incompatible
+    github.com/shirou/gopsutil/v3 v3.24.1
+)

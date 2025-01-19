@@ -1,76 +1,148 @@
-	package gpio
+package internal
 
-	import (
-	  "context"
-	  "fmt"
-	  "sync"
-	  "time"
+import (
+	"fmt"
+	"log"
+	"sync"
 
-	  "github.com/prometheus/client_golang/prometheus"
-	  "github.com/rs/zerolog"
-	  "github.com/yourorg/gpio/internal/gpio/driver"
-	)
+	"periph.io/x/conn/v3/gpio"
+	"periph.io/x/conn/v3/gpio/gpioreg"
+	"periph.io/x/host/v3"
+)
 
-	// Service represents the GPIO service interface
-	type Service interface {
-	  Configure(ctx context.Context, pin Pin) error
-	  Read(ctx context.Context, pinNum int) (State, error)
-	  Write(ctx context.Context, pinNum int, state State) error
-	  Watch(ctx context.Context, pinNum int) (<-chan Event, error)
-	  Close() error
+// GPIOCallback is a function type for GPIO state change callbacks
+type GPIOCallback func(pin int, value bool)
+
+// gpioOperations represents the possible operations on a GPIO pin
+type gpioOperations struct {
+	direction string
+	value     bool
+}
+
+// gpioState represents the current state of a GPIO pin
+type gpioState struct {
+	pin       gpio.PinIO
+	direction string
+	value     bool
+}
+
+// GPIOManager manages GPIO pins and their states
+type GPIOManager struct {
+	pins      map[int]*gpioState
+	callbacks []GPIOCallback
+	mu        sync.RWMutex
+}
+
+// NewGPIOManager creates a new GPIO manager
+func NewGPIOManager() *GPIOManager {
+	// Initialize host
+	if _, err := host.Init(); err != nil {
+		log.Printf("Failed to initialize host: %v", err)
 	}
 
-	type service struct {
-	  driver     driver.Driver
-	  logger     zerolog.Logger
-	  metrics    *metrics
-	  watchMu    sync.RWMutex
-	  watchers   map[int][]chan Event
-	  closeCh    chan struct{}
-	  closeOnce  sync.Once
+	return &GPIOManager{
+		pins:      make(map[int]*gpioState),
+		callbacks: make([]GPIOCallback, 0),
+	}
+}
+
+// SetupPin configures a GPIO pin with the specified direction
+func (gm *GPIOManager) SetupPin(pinNumber int, direction string) error {
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+
+	// Get the GPIO pin
+	pin := gpioreg.ByName(fmt.Sprintf("GPIO%d", pinNumber))
+	if pin == nil {
+		return fmt.Errorf("failed to find pin %d", pinNumber)
 	}
 
-	type metrics struct {
-	  pinOps     *prometheus.CounterVec
-	  pinErrors  *prometheus.CounterVec
-	  pinStates  *prometheus.GaugeVec
-	  watchCount prometheus.Gauge
+	var err error
+	switch direction {
+	case "in":
+		err = pin.In(gpio.PullUp, gpio.NoEdge)
+	case "out":
+		err = pin.Out(gpio.Low)
+	default:
+		return fmt.Errorf("invalid direction: %s", direction)
 	}
 
-	func NewService(d driver.Driver, l zerolog.Logger) Service {
-	  m := initMetrics()
-	  return &service{
-	    driver:   d,
-	    logger:   l,
-	    metrics:  m,
-	    watchers: make(map[int][]chan Event),
-	    closeCh:  make(chan struct{}),
-	  }
+	if err != nil {
+		return fmt.Errorf("failed to set pin direction: %v", err)
 	}
 
-	func (s *service) Configure(ctx context.Context, pin Pin) error {
-	  timer := prometheus.NewTimer(s.metrics.pinOps.WithLabelValues("configure"))
-	  defer timer.ObserveDuration()
-
-	  if err := s.validatePin(pin); err != nil {
-	    s.metrics.pinErrors.WithLabelValues("configure").Inc()
-	    return fmt.Errorf("pin validation failed: %w", err)
-	  }
-
-	  if err := s.driver.Configure(pin.Number, pin.Direction, pin.PullUp); err != nil {
-	    s.metrics.pinErrors.WithLabelValues("configure").Inc()
-	    return fmt.Errorf("driver configure failed: %w", err)
-	  }
-
-	  s.logger.Info().
-	    Int("pin", pin.Number).
-	    Interface("direction", pin.Direction).
-	    Bool("pullup", pin.PullUp).
-	    Msg("pin configured")
-
-	  return nil
+	gm.pins[pinNumber] = &gpioState{
+		pin:       pin,
+		direction: direction,
+		value:     false,
 	}
 
-	// Additional methods implemented similarly with proper error handling,
-	// metrics, and logging
+	return nil
+}
 
+// WritePin sets the value of a GPIO pin
+func (gm *GPIOManager) WritePin(pinNumber int, value bool) error {
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+
+	state, exists := gm.pins[pinNumber]
+	if !exists {
+		return fmt.Errorf("pin %d not configured", pinNumber)
+	}
+
+	if state.direction != "out" {
+		return fmt.Errorf("pin %d not configured for output", pinNumber)
+	}
+
+	level := gpio.Low
+	if value {
+		level = gpio.High
+	}
+
+	if err := state.pin.Out(level); err != nil {
+		return fmt.Errorf("failed to set pin value: %v", err)
+	}
+
+	state.value = value
+	gm.notifyCallbacks(pinNumber, value)
+	return nil
+}
+
+// ReadPin reads the current value of a GPIO pin
+func (gm *GPIOManager) ReadPin(pinNumber int) (bool, error) {
+	gm.mu.RLock()
+	defer gm.mu.RUnlock()
+
+	state, exists := gm.pins[pinNumber]
+	if !exists {
+		return false, fmt.Errorf("pin %d not configured", pinNumber)
+	}
+
+	if state.direction != "in" {
+		return false, fmt.Errorf("pin %d not configured for input", pinNumber)
+	}
+
+	return state.pin.Read() == gpio.High, nil
+}
+
+// RegisterCallback registers a callback function for GPIO state changes
+func (gm *GPIOManager) RegisterCallback(callback GPIOCallback) {
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+	gm.callbacks = append(gm.callbacks, callback)
+}
+
+// notifyCallbacks notifies all registered callbacks of a GPIO state change
+func (gm *GPIOManager) notifyCallbacks(pin int, value bool) {
+	for _, callback := range gm.callbacks {
+		go callback(pin, value)
+	}
+}
+
+// boolToFloat64 converts a boolean to a float64 (1.0 for true, 0.0 for false)
+func boolToFloat64(b bool) float64 {
+	if b {
+		return 1.0
+	}
+	return 0.0
+}
